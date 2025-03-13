@@ -1,3 +1,6 @@
+// Load environment variables
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
@@ -12,21 +15,31 @@ let inMemoryComments = [];
 let isUsingInMemoryDB = false;
 
 // MongoDB connection
-const uri = "mongodb+srv://fund:Ri11559988@cluster0.oq5xc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
-let db;
+const uri = process.env.MONGODB_URI || "mongodb+srv://fund:Ri11559988@cluster0.oq5xc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
+let client = null;
+let db = null;
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  }
-});
+const createClient = () => {
+  return new MongoClient(uri, {
+    serverApi: {
+      version: ServerApiVersion.v1,
+      strict: true,
+      deprecationErrors: true,
+    }
+  });
+};
 
 // Connect to MongoDB
 async function connectToMongoDB() {
+  if (db) return db;
+  
   try {
+    // Create a new client if needed
+    if (!client) {
+      client = createClient();
+    }
+    
     // Connect the client to the server
     await client.connect();
     console.log("Connected to MongoDB Atlas!");
@@ -45,22 +58,36 @@ async function connectToMongoDB() {
     if (!(await db.listCollections({ name: "comments" }).hasNext())) {
       await db.createCollection("comments");
     }
+    
+    return db;
   } catch (err) {
     console.error("Could not connect to MongoDB", err);
     console.log("Falling back to in-memory database. Data will not persist after server restart.");
     isUsingInMemoryDB = true;
+    return null;
   }
 }
 
-// Connect to MongoDB
-connectToMongoDB();
+// Connect to MongoDB on startup
+connectToMongoDB().catch(console.error);
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
+// Health check endpoint for Vercel
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ status: 'ok', message: 'VanishVote API is running' });
+});
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.status(200).json({ message: 'Welcome to VanishVote API' });
+});
+
 // Create a new poll
-app.post('/polls', async (req, res) => {
+app.post('/api/polls', async (req, res) => {
+  await connectToMongoDB();
   try {
     const { question, options, expirationTime, isPrivate, hideResults } = req.body;
     
@@ -108,7 +135,8 @@ app.post('/polls', async (req, res) => {
 });
 
 // Fetch poll details and results
-app.get('/polls/:id', async (req, res) => {
+app.get('/api/polls/:id', async (req, res) => {
+  await connectToMongoDB();
   try {
     if (isUsingInMemoryDB) {
       // Use in-memory database
@@ -179,7 +207,8 @@ app.get('/polls/:id', async (req, res) => {
 });
 
 // Submit a vote
-app.post('/polls/:id/vote', async (req, res) => {
+app.post('/api/polls/:id/vote', async (req, res) => {
+  await connectToMongoDB();
   try {
     const { option } = req.body;
     
@@ -272,7 +301,8 @@ app.post('/polls/:id/vote', async (req, res) => {
 });
 
 // Add a comment to a poll
-app.post('/polls/:id/comments', async (req, res) => {
+app.post('/api/polls/:id/comments', async (req, res) => {
+  await connectToMongoDB();
   try {
     const { text } = req.body;
     
@@ -325,6 +355,7 @@ app.post('/polls/:id/comments', async (req, res) => {
       };
       
       const result = await db.collection("comments").insertOne(comment);
+      console.log("result ",result)
       comment._id = result.insertedId;
       
       res.status(201).json(comment);
@@ -335,7 +366,8 @@ app.post('/polls/:id/comments', async (req, res) => {
 });
 
 // Like a poll
-app.post('/polls/:id/like', async (req, res) => {
+app.post('/api/polls/:id/like', async (req, res) => {
+  await connectToMongoDB();
   try {
     if (isUsingInMemoryDB) {
       // Use in-memory database
@@ -361,12 +393,12 @@ app.post('/polls/:id/like', async (req, res) => {
         { $inc: { likes: 1 } },
         { returnDocument: 'after' }
       );
-      
-      if (!result.value) {
+    
+      if (!result) {
         return res.status(404).json({ error: 'Poll not found' });
       }
       
-      res.status(200).json({ likes: result.value.likes });
+      res.status(200).json({ likes: result.likes });
     }
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -374,7 +406,8 @@ app.post('/polls/:id/like', async (req, res) => {
 });
 
 // Get trending polls
-app.get('/trending', async (req, res) => {
+app.get('/api/trending', async (req, res) => {
+  await connectToMongoDB();
   try {
     if (isUsingInMemoryDB) {
       // Use in-memory database
@@ -393,7 +426,22 @@ app.get('/trending', async (req, res) => {
   }
 });
 
-// Start the server
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+// For backward compatibility - redirect old routes to new API routes
+app.use('/polls', (req, res) => {
+  const newUrl = `/api${req.originalUrl}`;
+  res.redirect(307, newUrl);
 });
+
+app.use('/trending', (req, res) => {
+  res.redirect(307, '/api/trending');
+});
+
+// Start the server (only in non-Vercel environments)
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+  });
+}
+
+// Export for Vercel
+module.exports = app;

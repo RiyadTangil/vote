@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: vanishvote-backend
+    env: node
+    buildCommand: npm install
+    startCommand: node index.js
+    envVars:
+      - key: MONGODB_URI
+        value: mongodb+srv://fund:Ri11559988@cluster0.oq5xc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
+      - key: NODE_ENV
+        value: production 
